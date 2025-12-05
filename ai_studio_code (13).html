@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Reality River - Three.js Replica</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #25C0D0; }
+        #info {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: 'Arial', sans-serif;
+            font-weight: bold;
+            text-shadow: 1px 1px 4px rgba(0,0,0,0.3);
+            pointer-events: none;
+            font-size: 1.2rem;
+        }
+    </style>
+</head>
+<body>
+
+<div id="info">REALITY RIVER REPLICA<br>Click a platform to hop</div>
+
+<!-- Import Three.js and Tween.js from CDN -->
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "@tweenjs/tween.js": "https://unpkg.com/@tweenjs/tween.js@23.1.1/dist/tween.esm.js"
+    }
+  }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import * as TWEEN from '@tweenjs/tween.js';
+
+    // --- CONFIGURATION ---
+    const COLORS = {
+        sky: 0x25C0D0,
+        water: 0x1EA0B0,
+        platform: 0xFF8C00, // The orange/clay look
+        platformTop: 0xFFA500,
+        player: 0x0055FF,
+        highlight: 0xFFFFFF
+    };
+
+    // --- SETUP SCENE ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(COLORS.sky);
+    // Add fog to blend the horizon like Interland
+    scene.fog = new THREE.Fog(COLORS.sky, 20, 60);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    // Isometric-ish angle
+    camera.position.set(-20, 20, 20);
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.SoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // --- LIGHTING ---
+    // Hemisphere light for soft global illumination
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 0.6);
+    scene.add(hemiLight);
+
+    // Directional light for shadows (The "Sun")
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(-20, 50, -20);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 0.5;
+    dirLight.shadow.camera.far = 100;
+    dirLight.shadow.camera.left = -30;
+    dirLight.shadow.camera.right = 30;
+    dirLight.shadow.camera.top = 30;
+    dirLight.shadow.camera.bottom = -30;
+    scene.add(dirLight);
+
+    // --- THE RIVER (WATER) ---
+    // We create a low-poly water effect by displacing vertices
+    const waterGeometry = new THREE.PlaneGeometry(100, 100, 40, 40);
+    waterGeometry.rotateX(-Math.PI / 2);
+    
+    // Store original positions for animation
+    const posAttribute = waterGeometry.attributes.position;
+    const vertexCount = posAttribute.count;
+    const originalPositions = [];
+    for (let i = 0; i < vertexCount; i++) {
+        originalPositions.push({
+            x: posAttribute.getX(i),
+            y: posAttribute.getY(i),
+            z: posAttribute.getZ(i)
+        });
+    }
+
+    const waterMaterial = new THREE.MeshPhongMaterial({
+        color: COLORS.water,
+        shininess: 80,
+        flatShading: true, // Key for the low-poly look
+        transparent: true,
+        opacity: 0.9
+    });
+    const water = new THREE.Mesh(waterGeometry, waterMaterial);
+    water.position.y = -1;
+    scene.add(water);
+
+    // --- PLATFORMS ---
+    const platforms = [];
+    const platformGroup = new THREE.Group();
+    scene.add(platformGroup);
+
+    // Create a path of platforms
+    const geometryHex = new THREE.CylinderGeometry(1.8, 1.8, 1, 6); // Hexagon shape
+    const materialHex = new THREE.MeshLambertMaterial({ color: COLORS.platform });
+    const materialHexTop = new THREE.MeshLambertMaterial({ color: COLORS.platformTop });
+    
+    function createPlatform(x, z) {
+        const mesh = new THREE.Mesh(geometryHex, [materialHex, materialHexTop, materialHex]); // Multi-material for sides/top
+        mesh.position.set(x, -0.5, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData = { isPlatform: true }; // Tag for raycaster
+        platformGroup.add(mesh);
+        platforms.push(mesh);
+    }
+
+    // Generate a simple zig-zag path
+    let curX = 0;
+    let curZ = 0;
+    createPlatform(curX, curZ); // Start
+    
+    for(let i=0; i<15; i++) {
+        // Randomly move forward or side
+        if (Math.random() > 0.5) curX += 4;
+        else curZ += 4;
+        createPlatform(curX, curZ);
+    }
+    
+    // Add a couple of "decoy" or scenic platforms floating around
+    for(let i=0; i<10; i++) {
+        createPlatform(Math.random() * 40 - 10, Math.random() * 40 - 10);
+    }
+
+    // --- PLAYER ---
+    // Simple geometric Internaut representation
+    const playerGeo = new THREE.IcosahedronGeometry(0.8, 0);
+    const playerMat = new THREE.MeshStandardMaterial({ 
+        color: COLORS.player, 
+        roughness: 0.2,
+        metalness: 0.1,
+        flatShading: true 
+    });
+    const player = new THREE.Mesh(playerGeo, playerMat);
+    player.position.set(0, 0.8, 0); // Start on first platform
+    player.castShadow = true;
+    player.receiveShadow = true;
+    scene.add(player);
+
+    // --- CONTROLS / INTERACTION ---
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.minDistance = 10;
+    controls.maxDistance = 50;
+    controls.maxPolarAngle = Math.PI / 2 - 0.1; // Prevent going under water
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    window.addEventListener('click', onMouseClick, false);
+
+    function onMouseClick(event) {
+        // Calculate mouse position
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+
+        // Intersect with platforms
+        const intersects = raycaster.intersectObjects(platformGroup.children);
+
+        if (intersects.length > 0) {
+            const target = intersects[0].object;
+            const targetPos = target.position;
+
+            // Simple distance check (can only jump to nearby platforms)
+            const dist = player.position.distanceTo(targetPos);
+            
+            if (dist < 6 && dist > 0.1) {
+                jumpTo(targetPos.x, targetPos.z);
+            }
+        }
+    }
+
+    function jumpTo(x, z) {
+        // Tween X and Z (Linear)
+        new TWEEN.Tween(player.position)
+            .to({ x: x, z: z }, 500)
+            .easing(TWEEN.Easing.Quadratic.Out)
+            .start();
+
+        // Tween Y (Parabola for jump arc)
+        const startY = player.position.y;
+        new TWEEN.Tween({ y: startY })
+            .to({ y: startY + 2 }, 250)
+            .easing(TWEEN.Easing.Circular.Out)
+            .onUpdate((obj) => { player.position.y = obj.y; })
+            .yoyo(true)
+            .repeat(1)
+            .start();
+        
+        // Squash and stretch effect
+        new TWEEN.Tween(player.scale)
+            .to({ x: 1.2, y: 0.8, z: 1.2 }, 100)
+            .yoyo(true)
+            .repeat(1)
+            .start();
+    }
+
+    // --- ANIMATION LOOP ---
+    const clock = new THREE.Clock();
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const time = clock.getElapsedTime();
+
+        // Animate Water (Wave simulation)
+        for (let i = 0; i < vertexCount; i++) {
+            const ox = originalPositions[i].x;
+            const oy = originalPositions[i].y;
+            const oz = originalPositions[i].z;
+
+            // Create wave movement using sine/cosine based on time and position
+            const waveH = 0.5 * Math.sin(ox * 0.5 + time) * Math.cos(oz * 0.3 + time);
+            
+            posAttribute.setY(i, oy + waveH);
+        }
+        posAttribute.needsUpdate = true;
+        // Recalculate normals for flat shading light reflection changes
+        waterGeometry.computeVertexNormals(); 
+
+        // Floating animation for platforms
+        platforms.forEach((plat, index) => {
+            // Determine if player is on this platform
+            const isPlayerOn = Math.abs(plat.position.x - player.position.x) < 0.1 && 
+                               Math.abs(plat.position.z - player.position.z) < 0.1;
+            
+            if (!isPlayerOn) {
+                plat.position.y = -0.5 + Math.sin(time * 2 + index) * 0.1;
+            } else {
+                plat.position.y = -0.5; // Stabilize if player is on it
+            }
+        });
+
+        // Rotate player slightly
+        player.rotation.y += 0.01;
+        player.rotation.z = Math.sin(time * 5) * 0.05;
+
+        // Camera follow (Smooth lerp)
+        const targetCamPos = { x: player.position.x - 20, z: player.position.z + 20 };
+        camera.position.x += (targetCamPos.x - camera.position.x) * 0.05;
+        camera.position.z += (targetCamPos.z - camera.position.z) * 0.05;
+        camera.lookAt(player.position);
+
+        TWEEN.update();
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // Handle Resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+</script>
+</body>
+</html>
